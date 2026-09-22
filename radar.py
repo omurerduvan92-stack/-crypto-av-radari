@@ -3,7 +3,7 @@ import time
 import requests
 from statistics import median
 
-SPOT = "https://api.binance.com"
+SPOT = "https://data-api.binance.vision"
 FUTURES = "https://fapi.binance.com"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
