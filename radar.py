@@ -5,7 +5,7 @@ from statistics import median
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =========================================================
-# CRYPTO AV RADARI v3
+# CRYPTO AV RADARI v4
 # =========================================================
 
 SPOT = "https://data-api.binance.vision"
@@ -14,39 +14,48 @@ FUTURES = "https://fapi.binance.com"
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# -------------------------
-# RADAR AYARLARI
-# -------------------------
+# =========================================================
+# AYARLAR
+# =========================================================
 
-# Erken hacim
+# Hacim anomalisi
 EARLY_VOLUME_MULTIPLE = 3.0
-
-# Güçlü hacim
 STRONG_VOLUME_MULTIPLE = 5.0
 
-# Taker alış baskısı
-MIN_TAKER_RATIO = 55.0
+# Spot alış baskısı
+MIN_TAKER_RATIO = 60.0
+STRONG_TAKER_RATIO = 68.0
 
-# OI artışı
-MIN_OI_CHANGE = 2.0
+# Açık 5dk mumda minimum gerçek USDT işlem hacmi
+# Düşük likiditeli sahte 20x/50x sinyalleri azaltır.
+MIN_QUOTE_VOLUME = 100_000
 
-# Futures hacim teyidi
-MIN_FUTURES_MULTIPLE = 3.0
+# Daha güçlü alarm için minimum USDT hacmi
+STRONG_QUOTE_VOLUME = 300_000
 
-# Çoktan uçmuş coinleri kovalamama
-MAX_PRICE_MOVE_5M = 10.0
+# Fiyat hareketi
+MIN_PRICE_MOVE_5M = 0.05
+MAX_PRICE_MOVE_5M = 7.0
 
-# Sert negatif mumlarda pump alarmı verme
-MIN_PRICE_MOVE_5M = -2.0
+# 15dk'da zaten çok uçmuşsa kovalamıyoruz
+MAX_PRICE_MOVE_15M = 12.0
 
-# Açık mumun ilk saniyelerinde projeksiyon şişmesini önle
+# Açık mumun ilk saniyelerinde tarama yapma
 MIN_ELAPSED_SECONDS = 45
 
-# Ön taramadan derin analize girecek maksimum coin
-MAX_DEEP_SCAN = 35
+# Breakout'a yakınlık
+MAX_BREAKOUT_DISTANCE = 1.5
 
-# Telegram'a gönderilecek maksimum alarm
-MAX_ALERTS = 5
+# Futures
+MIN_FUTURES_MULTIPLE = 3.0
+MIN_OI_CHANGE = 2.0
+
+# Performans
+MAX_DEEP_SCAN = 30
+MAX_ALERTS = 3
+
+# Aynı GitHub run içinde duplicate engeli
+sent_this_run = set()
 
 EXCLUDED_BASES = {
     "USDC", "FDUSD", "TUSD", "USDP", "DAI",
@@ -57,7 +66,7 @@ EXCLUDED_BASES = {
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "Crypto-Av-Radari/3.0"
+    "User-Agent": "Crypto-Av-Radari/4.0"
 })
 
 
@@ -87,8 +96,7 @@ def telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
 
         print("Telegram secret eksik.")
-
-        return
+        return False
 
     url = (
         f"https://api.telegram.org/"
@@ -97,21 +105,24 @@ def telegram(message):
 
     try:
 
-        requests.post(
+        r = requests.post(
             url,
             json={
                 "chat_id": CHAT_ID,
                 "text": message
             },
             timeout=8
-        ).raise_for_status()
+        )
+
+        r.raise_for_status()
+
+        return True
 
     except Exception as e:
 
-        print(
-            "Telegram hatasi:",
-            e
-        )
+        print("Telegram hatasi:", e)
+
+        return False
 
 
 # =========================================================
@@ -128,16 +139,24 @@ def pct(a, b):
 
 def safe_median(values):
 
-    values = [
-        float(x)
-        for x in values
-        if float(x) > 0
-    ]
+    cleaned = []
 
-    if not values:
+    for value in values:
+
+        try:
+
+            value = float(value)
+
+            if value > 0:
+                cleaned.append(value)
+
+        except Exception:
+            pass
+
+    if not cleaned:
         return 0.0
 
-    return median(values)
+    return median(cleaned)
 
 
 def fmt(value, suffix="", digits=2):
@@ -145,9 +164,23 @@ def fmt(value, suffix="", digits=2):
     if value is None:
         return "-"
 
-    return (
-        f"{value:+.{digits}f}{suffix}"
-    )
+    return f"{value:+.{digits}f}{suffix}"
+
+
+def money(value):
+
+    if value is None:
+        return "-"
+
+    if value >= 1_000_000:
+
+        return f"${value / 1_000_000:.2f}M"
+
+    if value >= 1_000:
+
+        return f"${value / 1_000:.0f}K"
+
+    return f"${value:.0f}"
 
 
 # =========================================================
@@ -167,23 +200,17 @@ def spot_symbols():
         if (
             s["quoteAsset"] == "USDT"
             and s["status"] == "TRADING"
-            and s.get(
-                "isSpotTradingAllowed",
-                True
-            )
-            and s["baseAsset"]
-            not in EXCLUDED_BASES
+            and s.get("isSpotTradingAllowed", True)
+            and s["baseAsset"] not in EXCLUDED_BASES
         ):
 
-            result.append(
-                s["symbol"]
-            )
+            result.append(s["symbol"])
 
     return result
 
 
 # =========================================================
-# FUTURES SEMBOLLER
+# FUTURES
 # =========================================================
 
 def futures_symbols():
@@ -201,8 +228,7 @@ def futures_symbols():
             if (
                 s.get("quoteAsset") == "USDT"
                 and s.get("status") == "TRADING"
-                and s.get("contractType")
-                == "PERPETUAL"
+                and s.get("contractType") == "PERPETUAL"
             )
         }
 
@@ -213,9 +239,7 @@ def futures_symbols():
             e
         )
 
-        print(
-            "Spot radar devam ediyor."
-        )
+        print("Spot radar devam ediyor.")
 
         return set()
 
@@ -224,11 +248,7 @@ def futures_symbols():
 # KLINE
 # =========================================================
 
-def klines(
-    symbol,
-    interval="5m",
-    limit=20
-):
+def klines(symbol, interval="5m", limit=20):
 
     return get_json(
         f"{SPOT}/api/v3/klines",
@@ -239,10 +259,6 @@ def klines(
         }
     )
 
-
-# =========================================================
-# FUTURES
-# =========================================================
 
 def futures_klines(symbol):
 
@@ -271,8 +287,7 @@ def oi_history(symbol):
 
 
 # =========================================================
-# 1. AŞAMA
-# HIZLI ÖN TARAMA
+# ÖN TARAMA
 # =========================================================
 
 def pre_scan(symbol):
@@ -289,32 +304,37 @@ def pre_scan(symbol):
             return None
 
         current = candles[-1]
-
         previous = candles[-9:-1]
 
-        current_volume = float(
-            current[5]
-        )
+        current_open = float(current[1])
+        current_close = float(current[4])
 
-        current_open = float(
-            current[1]
-        )
+        # Base asset hacmi
+        current_volume = float(current[5])
 
-        current_close = float(
-            current[4]
-        )
+        # USDT cinsinden gerçek işlem hacmi
+        current_quote_volume = float(current[7])
 
-        baseline = safe_median([
+        # Taker BUY quote volume
+        taker_buy_quote = float(current[10])
+
+        baseline_volume = safe_median([
             c[5]
             for c in previous
         ])
 
-        if baseline <= 0:
+        baseline_quote = safe_median([
+            c[7]
+            for c in previous
+        ])
+
+        if (
+            baseline_volume <= 0
+            or baseline_quote <= 0
+        ):
             return None
 
-        open_time = int(
-            current[0]
-        )
+        open_time = int(current[0])
 
         elapsed = (
             int(time.time() * 1000)
@@ -326,28 +346,31 @@ def pre_scan(symbol):
             300
         )
 
-        # İlk 45 saniyede
-        # projeksiyona güvenme
         if elapsed < MIN_ELAPSED_SECONDS:
             return None
 
-        progress = (
-            elapsed / 300
+        progress = elapsed / 300
+
+        # Açık mumun bugüne kadarki hacmi
+        current_multiple = (
+            current_volume /
+            baseline_volume
         )
 
-        projected_volume = (
-            current_volume /
+        quote_multiple = (
+            current_quote_volume /
+            baseline_quote
+        )
+
+        # 5dk sonuna giderse yaklaşık ne olur?
+        projected_multiple = (
+            current_multiple /
             progress
         )
 
-        projected_multiple = (
-            projected_volume /
-            baseline
-        )
-
-        current_multiple = (
-            current_volume /
-            baseline
+        projected_quote_multiple = (
+            quote_multiple /
+            progress
         )
 
         move_5m = pct(
@@ -355,53 +378,56 @@ def pre_scan(symbol):
             current_close
         )
 
-        taker_buy = float(
-            current[9]
-        )
-
         taker_ratio = (
-            taker_buy /
-            current_volume * 100
-            if current_volume > 0
+            taker_buy_quote /
+            current_quote_volume * 100
+            if current_quote_volume > 0
             else 0
         )
 
-        # Hacim yeterli değil
-        if (
-            projected_multiple <
-            EARLY_VOLUME_MULTIPLE
-        ):
+        # ---------------------------------------------
+        # TEMEL FİLTRELER
+        # ---------------------------------------------
+
+        # Gerçek dolar hacmi küçükse çöpe at
+        if current_quote_volume < MIN_QUOTE_VOLUME:
+            return None
+
+        # Hacim ivmesi yok
+        if projected_quote_multiple < EARLY_VOLUME_MULTIPLE:
+            return None
+
+        # Alıcı baskısı yeterli değil
+        if taker_ratio < MIN_TAKER_RATIO:
+            return None
+
+        # Fiyat henüz yukarı uyanmamış
+        if move_5m < MIN_PRICE_MOVE_5M:
             return None
 
         # Çoktan uçmuş
-        if (
-            move_5m >
-            MAX_PRICE_MOVE_5M
-        ):
+        if move_5m > MAX_PRICE_MOVE_5M:
             return None
 
-        # Sert satış
+        # İlk bölümde projeksiyon aşırı şişmesin
         if (
-            move_5m <
-            MIN_PRICE_MOVE_5M
-        ):
-            return None
-
-        # Çok erken sahte spike filtresi:
-        # projeksiyon yüksek olsa bile
-        # gerçek mum hacmi tamamen boş olmasın.
-        if (
-            current_multiple < 0.35
-            and elapsed < 90
+            elapsed < 90
+            and quote_multiple < 0.45
         ):
             return None
 
         return {
             "symbol": symbol,
-            "projected_multiple":
-                projected_multiple,
             "current_multiple":
                 current_multiple,
+            "projected_multiple":
+                projected_multiple,
+            "quote_multiple":
+                quote_multiple,
+            "projected_quote_multiple":
+                projected_quote_multiple,
+            "quote_volume":
+                current_quote_volume,
             "move_5m":
                 move_5m,
             "taker_ratio":
@@ -413,14 +439,10 @@ def pre_scan(symbol):
 
 
 # =========================================================
-# 2. AŞAMA
 # DERİN ANALİZ
 # =========================================================
 
-def deep_scan(
-    candidate,
-    futures_set
-):
+def deep_scan(candidate, futures_set):
 
     symbol = candidate["symbol"]
 
@@ -432,36 +454,37 @@ def deep_scan(
             20
         )
 
+        if len(candles) < 14:
+            return None
+
         current = candles[-1]
         previous = candles[-9:-1]
 
-        current_open = float(
-            current[1]
-        )
+        current_open = float(current[1])
+        current_close = float(current[4])
 
-        current_close = float(
-            current[4]
-        )
+        current_volume = float(current[5])
+        current_quote_volume = float(current[7])
 
-        current_volume = float(
-            current[5]
-        )
+        taker_buy_quote = float(current[10])
 
-        taker_buy_volume = float(
-            current[9]
-        )
-
-        baseline = safe_median([
+        baseline_volume = safe_median([
             c[5]
             for c in previous
         ])
 
-        if baseline <= 0:
+        baseline_quote = safe_median([
+            c[7]
+            for c in previous
+        ])
+
+        if (
+            baseline_volume <= 0
+            or baseline_quote <= 0
+        ):
             return None
 
-        open_time = int(
-            current[0]
-        )
+        open_time = int(current[0])
 
         elapsed = (
             int(time.time() * 1000)
@@ -473,19 +496,26 @@ def deep_scan(
             300
         )
 
-        progress = (
-            elapsed / 300
-        )
+        progress = elapsed / 300
 
         current_multiple = (
             current_volume /
-            baseline
+            baseline_volume
+        )
+
+        quote_multiple = (
+            current_quote_volume /
+            baseline_quote
         )
 
         projected_multiple = (
-            current_volume /
-            progress /
-            baseline
+            current_multiple /
+            progress
+        )
+
+        projected_quote_multiple = (
+            quote_multiple /
+            progress
         )
 
         move_5m = pct(
@@ -494,23 +524,24 @@ def deep_scan(
         )
 
         taker_ratio = (
-            taker_buy_volume /
-            current_volume * 100
-            if current_volume > 0
+            taker_buy_quote /
+            current_quote_volume * 100
+            if current_quote_volume > 0
             else 0
         )
 
-        # -------------------------
+        # =================================================
         # 1 DK
-        # -------------------------
+        # =================================================
 
         one = klines(
             symbol,
             "1m",
-            3
+            6
         )
 
         move_1m = None
+        one_minute_quote = None
 
         if one:
 
@@ -521,9 +552,11 @@ def deep_scan(
                 float(m[4])
             )
 
-        # -------------------------
+            one_minute_quote = float(m[7])
+
+        # =================================================
         # 15 DK
-        # -------------------------
+        # =================================================
 
         fifteen = klines(
             symbol,
@@ -542,12 +575,17 @@ def deep_scan(
                 float(m[4])
             )
 
-        # -------------------------
-        # BREAKOUT
-        # -------------------------
+        if (
+            move_15m is not None
+            and move_15m >
+            MAX_PRICE_MOVE_15M
+        ):
+            return None
 
-        # Açık mum hariç son mumların
-        # en yüksek seviyesi
+        # =================================================
+        # BREAKOUT
+        # =================================================
+
         recent_highs = [
             float(c[2])
             for c in candles[-13:-1]
@@ -563,14 +601,28 @@ def deep_scan(
 
         if breakout:
 
+            # Pozitif = breakout seviyesi fiyatın üzerinde.
+            # Negatif = fiyat breakout'u geçmiş.
             breakout_distance = pct(
                 current_close,
                 breakout
             )
 
-        # -------------------------
+        breakout_near = (
+            breakout_distance is not None
+            and
+            -3.0 <= breakout_distance <=
+            MAX_BREAKOUT_DISTANCE
+        )
+
+        breakout_done = (
+            breakout_distance is not None
+            and breakout_distance <= 0
+        )
+
+        # =================================================
         # FUTURES + OI
-        # -------------------------
+        # =================================================
 
         futures_multiple = None
         oi_change = None
@@ -579,45 +631,31 @@ def deep_scan(
 
             try:
 
-                fc = futures_klines(
-                    symbol
-                )
+                fc = futures_klines(symbol)
 
                 if len(fc) >= 10:
 
                     f_current = fc[-1]
-
-                    f_previous = (
-                        fc[-9:-1]
-                    )
+                    f_previous = fc[-9:-1]
 
                     f_volume = float(
                         f_current[5]
                     )
 
-                    f_baseline = (
-                        safe_median([
-                            c[5]
-                            for c
-                            in f_previous
-                        ])
-                    )
+                    f_baseline = safe_median([
+                        c[5]
+                        for c in f_previous
+                    ])
 
                     if f_baseline > 0:
 
-                        f_projected = (
-                            f_volume /
-                            progress
-                        )
-
                         futures_multiple = (
-                            f_projected /
+                            f_volume /
+                            progress /
                             f_baseline
                         )
 
-                oi = oi_history(
-                    symbol
-                )
+                oi = oi_history(symbol)
 
                 if len(oi) >= 3:
 
@@ -646,13 +684,20 @@ def deep_scan(
                     e
                 )
 
-        # -------------------------
-        # TEYİTLER
-        # -------------------------
+        # =================================================
+        # BAĞIMSIZ TEYİTLER
+        # =================================================
+
+        volume_confirmed = (
+            projected_quote_multiple >=
+            EARLY_VOLUME_MULTIPLE
+        )
 
         strong_volume = (
-            projected_multiple >=
+            projected_quote_multiple >=
             STRONG_VOLUME_MULTIPLE
+            and current_quote_volume >=
+            STRONG_QUOTE_VOLUME
         )
 
         taker_confirmed = (
@@ -660,60 +705,118 @@ def deep_scan(
             MIN_TAKER_RATIO
         )
 
+        strong_taker = (
+            taker_ratio >=
+            STRONG_TAKER_RATIO
+        )
+
+        momentum_confirmed = (
+            move_5m >=
+            MIN_PRICE_MOVE_5M
+            and move_5m <=
+            MAX_PRICE_MOVE_5M
+            and (
+                move_1m is None
+                or move_1m > -0.25
+            )
+        )
+
         futures_confirmed = (
-            futures_multiple
-            is not None
+            futures_multiple is not None
             and futures_multiple >=
             MIN_FUTURES_MULTIPLE
         )
 
         oi_confirmed = (
-            oi_change
-            is not None
+            oi_change is not None
             and oi_change >=
             MIN_OI_CHANGE
         )
 
-        # Fiyatın yukarı yönlü
-        # olması ek kalite filtresi
-        momentum_confirmed = (
-            move_5m > 0
-            and (
-                move_1m is None
-                or move_1m > -0.5
-            )
-        )
+        # =================================================
+        # ZORUNLU SPOT ŞARTLARI
+        # =================================================
 
-        confirmations = sum([
-            strong_volume,
-            taker_confirmed,
-            futures_confirmed,
-            oi_confirmed,
-            momentum_confirmed
-        ])
-
-        # -------------------------
-        # ALARM KALİTESİ
-        # -------------------------
-
-        level = "🟡 ERKEN AV"
-
-        if confirmations >= 3:
-
-            level = (
-                "🟠 GUCLU ERKEN SINYAL"
-            )
-
-        if confirmations >= 4:
-
-            level = (
-                "🚨 ERKEN ANOMALI"
-            )
-
-        # Zayıf sinyali Telegram'a
-        # taşımayalım.
-        if confirmations < 2:
+        if not volume_confirmed:
             return None
+
+        if not taker_confirmed:
+            return None
+
+        if not momentum_confirmed:
+            return None
+
+        if current_quote_volume < MIN_QUOTE_VOLUME:
+            return None
+
+        # =================================================
+        # PUANLAMA
+        # =================================================
+
+        score = 0
+
+        # Gerçek USDT hacim ivmesi
+        if volume_confirmed:
+            score += 1
+
+        if strong_volume:
+            score += 1
+
+        # Alıcı baskısı
+        if strong_taker:
+            score += 1
+
+        # Fiyat davranışı
+        if momentum_confirmed:
+            score += 1
+
+        # Breakout yapısı
+        if breakout_near:
+            score += 1
+
+        if breakout_done:
+            score += 1
+
+        # Bağımsız vadeli teyitler
+        if futures_confirmed:
+            score += 2
+
+        if oi_confirmed:
+            score += 2
+
+        # =================================================
+        # ALARM SEVİYESİ
+        # =================================================
+
+        # Telegram'a çıkmak için artık daha sert şart.
+        if score < 4:
+            return None
+
+        level = "🟠 ERKEN AV"
+
+        # Futures yokken sadece spot verisiyle
+        # kolayca "çok güçlü" demiyoruz.
+        if (
+            score >= 6
+            and (
+                futures_confirmed
+                or oi_confirmed
+            )
+        ):
+
+            level = (
+                "🚨 GUCLU ERKEN ANOMALI"
+            )
+
+        elif (
+            score >= 5
+            and strong_volume
+            and strong_taker
+        ):
+
+            level = (
+                "🟠 GUCLU SPOT ANOMALISI"
+            )
 
         return {
             "symbol":
@@ -737,6 +840,18 @@ def deep_scan(
             "projected_multiple":
                 projected_multiple,
 
+            "quote_multiple":
+                quote_multiple,
+
+            "projected_quote_multiple":
+                projected_quote_multiple,
+
+            "quote_volume":
+                current_quote_volume,
+
+            "one_minute_quote":
+                one_minute_quote,
+
             "taker_ratio":
                 taker_ratio,
 
@@ -756,7 +871,7 @@ def deep_scan(
                 level,
 
             "score":
-                confirmations
+                score
         }
 
     except Exception as e:
@@ -771,7 +886,7 @@ def deep_scan(
 
 
 # =========================================================
-# ALERT FORMAT
+# ALERT
 # =========================================================
 
 def format_alert(x):
@@ -825,30 +940,36 @@ def format_alert(x):
         f"{fmt(x['move_5m'], '%')}\n"
 
         f"📊 15dk: "
-        f"{fmt(x['move_15m'], '%')}\n"
+        f"{fmt(x['move_15m'], '%')}\n\n"
 
-        f"🔥 Hacim şimdi: "
-        f"{x['current_multiple']:.1f}x\n"
+        f"💰 Bu 5dk mumunda: "
+        f"{money(x['quote_volume'])}\n"
 
-        f"🚀 5dk hacim hız tahmini: "
-        f"{x['projected_multiple']:.1f}x\n"
+        f"🔥 Gerçek hacim: "
+        f"{x['quote_multiple']:.1f}x\n"
+
+        f"🚀 Hacim hız tahmini: "
+        f"{x['projected_quote_multiple']:.1f}x\n"
 
         f"🟢 Spot taker alış: "
-        f"%{x['taker_ratio']:.1f}\n"
+        f"%{x['taker_ratio']:.1f}\n\n"
 
         f"⚙️ Futures hacim: "
         f"{futures_text}\n"
 
         f"📊 OI ~10dk: "
-        f"{oi_text}\n"
+        f"{oi_text}\n\n"
 
         f"🎯 Breakout: "
         f"{breakout_text}\n"
 
         f"📍 Breakout mesafe: "
-        f"{breakout_distance}\n\n"
+        f"{breakout_distance}\n"
 
-        f"⚠️ Erken radar sinyalidir; "
+        f"⭐ Radar puanı: "
+        f"{x['score']}\n\n"
+
+        f"⚠️ Erken anomali takibidir; "
         f"otomatik alim sinyali degildir."
     )
 
@@ -862,7 +983,7 @@ def main():
     start = time.time()
 
     print(
-        "Crypto Av Radari v3 basladi."
+        "Crypto Av Radari v4 basladi."
     )
 
     symbols = spot_symbols()
@@ -872,8 +993,6 @@ def main():
         len(symbols)
     )
 
-    # Futures 451 verirse
-    # spot radar devam eder.
     futures_set = futures_symbols()
 
     print(
@@ -882,18 +1001,16 @@ def main():
     )
 
     # =====================================================
-    # HIZLI ÖN TARAMA
+    # ÖN TARAMA
     # =====================================================
 
     candidates = []
 
-    # Aynı anda birkaç istek.
-    # 492 coini tek tek beklemiyoruz.
     with ThreadPoolExecutor(
         max_workers=12
     ) as executor:
 
-        futures = {
+        jobs = {
             executor.submit(
                 pre_scan,
                 symbol
@@ -902,17 +1019,14 @@ def main():
         }
 
         for future in as_completed(
-            futures
+            jobs
         ):
 
             try:
 
-                result = (
-                    future.result()
-                )
+                result = future.result()
 
                 if result:
-
                     candidates.append(
                         result
                     )
@@ -920,18 +1034,21 @@ def main():
             except Exception:
                 pass
 
+    # Sadece "x" oranına değil,
+    # gerçek USDT hacmine de ağırlık ver.
     candidates.sort(
-        key=lambda x:
-        x["projected_multiple"],
+        key=lambda x: (
+            x[
+                "projected_quote_multiple"
+            ],
+            x["quote_volume"]
+        ),
         reverse=True
     )
 
-    # En güçlü adayları derin tara
-    candidates = (
-        candidates[
-            :MAX_DEEP_SCAN
-        ]
-    )
+    candidates = candidates[
+        :MAX_DEEP_SCAN
+    ]
 
     print(
         "On tarama adayi:",
@@ -952,21 +1069,33 @@ def main():
         )
 
         if result:
-            alerts.append(result)
 
-    # Önce teyit,
-    # sonra hacim ivmesi
+            if (
+                result["symbol"]
+                not in sent_this_run
+            ):
+
+                sent_this_run.add(
+                    result["symbol"]
+                )
+
+                alerts.append(
+                    result
+                )
+
+    # Puan + gerçek para hacmi + ivme
     alerts.sort(
         key=lambda x: (
             x["score"],
-            x["projected_multiple"]
+            x["quote_volume"],
+            x[
+                "projected_quote_multiple"
+            ]
         ),
         reverse=True
     )
 
-    elapsed = (
-        time.time() - start
-    )
+    elapsed = time.time() - start
 
     print(
         "Toplam tarama suresi:",
@@ -995,8 +1124,8 @@ def main():
         :MAX_ALERTS
     ]:
 
-        message = (
-            format_alert(alert)
+        message = format_alert(
+            alert
         )
 
         telegram(message)
@@ -1004,8 +1133,12 @@ def main():
         print(
             alert["symbol"],
             alert["level"],
-            "spot:",
-            f"{alert['projected_multiple']:.1f}x",
+            "USDT hacim:",
+            money(
+                alert["quote_volume"]
+            ),
+            "hacim:",
+            f"{alert['projected_quote_multiple']:.1f}x",
             "taker:",
             f"%{alert['taker_ratio']:.1f}",
             "score:",
