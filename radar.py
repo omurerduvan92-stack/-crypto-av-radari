@@ -3,34 +3,60 @@ import time
 import requests
 from statistics import median
 
+# =========================
+# BAGLANTILAR
+# =========================
+
 SPOT = "https://data-api.binance.vision"
 FUTURES = "https://fapi.binance.com"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Radar ayarlari
-MIN_VOLUME_MULTIPLE = 4.0
+# =========================
+# RADAR AYARLARI
+# =========================
+
+# Acik 5dk mumunda erken uyari
+EARLY_VOLUME_MULTIPLE = 3.0
+
+# Guclu hacim anomalisi
 STRONG_VOLUME_MULTIPLE = 5.0
-MIN_PRICE_MOVE = 2.0
-MAX_PRICE_MOVE = 12.0
+
+# Coktan ucmus coinleri kovalamamak icin
+MAX_PRICE_MOVE_5M = 12.0
+
+# Taker alici teyidi
+MIN_TAKER_RATIO = 55.0
+
+# OI teyidi
 MIN_OI_CHANGE = 2.0
 
-# Stablecoin / TradFi benzeri varliklari ele
 EXCLUDED_BASES = {
-    "USDC", "FDUSD", "TUSD", "USDP", "DAI", "EUR", "AEUR",
-    "TRY", "BRL", "GBP", "JPY", "AUD", "BIDR", "IDRT"
+    "USDC", "FDUSD", "TUSD", "USDP", "DAI",
+    "EUR", "TRY", "BRL", "GBP", "JPY", "AUD",
+    "BIDR"
 }
 
 session = requests.Session()
-session.headers.update({"User-Agent": "CryptoAvRadari/1.0"})
+session.headers.update({
+    "User-Agent": "Crypto-Av-Radari/2.0"
+})
 
+
+# =========================
+# HTTP
+# =========================
 
 def get_json(url, params=None, timeout=10):
     r = session.get(url, params=params, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
+
+# =========================
+# TELEGRAM
+# =========================
 
 def telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
@@ -48,15 +74,22 @@ def telegram(message):
             },
             timeout=10
         ).raise_for_status()
+
     except Exception as e:
         print("Telegram hatasi:", e)
 
 
+# =========================
+# SYMBOL LISTELERI
+# =========================
+
 def spot_symbols():
     info = get_json(f"{SPOT}/api/v3/exchangeInfo")
+
     result = []
 
     for s in info["symbols"]:
+
         if (
             s["quoteAsset"] == "USDT"
             and s["status"] == "TRADING"
@@ -69,29 +102,52 @@ def spot_symbols():
 
 
 def futures_symbols():
-    info = get_json(f"{FUTURES}/fapi/v1/exchangeInfo")
 
-    return {
-        s["symbol"]
-        for s in info["symbols"]
-        if s["quoteAsset"] == "USDT"
-        and s["status"] == "TRADING"
-        and s.get("contractType") == "PERPETUAL"
-    }
+    try:
+        info = get_json(
+            f"{FUTURES}/fapi/v1/exchangeInfo"
+        )
+
+        return {
+            s["symbol"]
+            for s in info["symbols"]
+            if s.get("quoteAsset") == "USDT"
+            and s.get("status") == "TRADING"
+            and s.get("contractType") == "PERPETUAL"
+        }
+
+    except Exception as e:
+
+        # Binance Futures GitHub Actions IP'sini
+        # engellerse radar artik COKMEYECEK.
+        print("Futures API kullanilamiyor:", e)
+        print("Spot radar devam ediyor.")
+
+        return set()
 
 
-def klines(symbol, limit=14):
+# =========================
+# KLINE
+# =========================
+
+def klines(symbol, interval="5m", limit=20):
+
     return get_json(
         f"{SPOT}/api/v3/klines",
         {
             "symbol": symbol,
-            "interval": "5m",
+            "interval": interval,
             "limit": limit
         }
     )
 
 
+# =========================
+# FUTURES / OI
+# =========================
+
 def oi_history(symbol):
+
     return get_json(
         f"{FUTURES}/futures/data/openInterestHist",
         {
@@ -102,177 +158,417 @@ def oi_history(symbol):
     )
 
 
-def funding(symbol):
-    data = get_json(
-        f"{FUTURES}/fapi/v1/premiumIndex",
-        {"symbol": symbol}
-    )
-    return float(data.get("lastFundingRate", 0)) * 100
+def futures_klines(symbol):
 
+    return get_json(
+        f"{FUTURES}/fapi/v1/klines",
+        {
+            "symbol": symbol,
+            "interval": "5m",
+            "limit": 12
+        }
+    )
+
+
+# =========================
+# YARDIMCI
+# =========================
+
+def pct(a, b):
+
+    if a == 0:
+        return 0
+
+    return ((b / a) - 1) * 100
+
+
+# =========================
+# COIN TARAMA
+# =========================
 
 def scan_symbol(symbol, futures_set):
-    candles = klines(symbol)
+
+    candles = klines(
+        symbol,
+        interval="5m",
+        limit=20
+    )
 
     if len(candles) < 12:
         return None
 
-    # Son kapanmis 5dk mum
-    current = candles[-2]
+    # Son eleman ACIK 5dk mumudur
+    current = candles[-1]
 
-    # Onceki 8 kapanmis mum
-    previous = candles[-10:-2]
+    # Onceki 8 KAPANMIS mum
+    previous = candles[-9:-1]
 
     current_open = float(current[1])
     current_close = float(current[4])
     current_volume = float(current[5])
     taker_buy_volume = float(current[9])
 
-    baseline_volumes = [float(c[5]) for c in previous]
+    baseline_volumes = [
+        float(c[5])
+        for c in previous
+    ]
+
     baseline = median(baseline_volumes)
 
     if baseline <= 0:
         return None
 
-    volume_multiple = current_volume / baseline
-    price_move = ((current_close / current_open) - 1) * 100
+    # -------------------------
+    # ACIK MUM SURE DUZELTMESI
+    # -------------------------
 
-    taker_ratio = (
-        taker_buy_volume / current_volume * 100
-        if current_volume > 0 else 0
+    open_time = int(current[0])
+
+    elapsed_seconds = (
+        int(time.time() * 1000) - open_time
+    ) / 1000
+
+    elapsed_seconds = max(
+        15,
+        min(elapsed_seconds, 300)
     )
 
-    # Ilk filtre: fiyat + hacim ateslemesi
-    if volume_multiple < MIN_VOLUME_MULTIPLE:
+    progress = elapsed_seconds / 300
+
+    # Mum bu hizla devam ederse
+    # 5dk sonunda tahmini hacim
+    projected_volume = (
+        current_volume / progress
+    )
+
+    current_multiple = (
+        current_volume / baseline
+    )
+
+    projected_multiple = (
+        projected_volume / baseline
+    )
+
+    price_move = pct(
+        current_open,
+        current_close
+    )
+
+    taker_ratio = (
+        taker_buy_volume /
+        current_volume * 100
+        if current_volume > 0
+        else 0
+    )
+
+    # -------------------------
+    # 1DK MOMENTUM
+    # -------------------------
+
+    one_min = klines(
+        symbol,
+        interval="1m",
+        limit=3
+    )
+
+    move_1m = None
+
+    if one_min:
+
+        m = one_min[-1]
+
+        move_1m = pct(
+            float(m[1]),
+            float(m[4])
+        )
+
+    # -------------------------
+    # 15DK MOMENTUM
+    # -------------------------
+
+    fifteen = klines(
+        symbol,
+        interval="15m",
+        limit=2
+    )
+
+    move_15m = None
+
+    if fifteen:
+
+        m = fifteen[-1]
+
+        move_15m = pct(
+            float(m[1]),
+            float(m[4])
+        )
+
+    # -------------------------
+    # ERKEN HACIM FILTRESI
+    # -------------------------
+
+    if projected_multiple < EARLY_VOLUME_MULTIPLE:
         return None
 
-    if price_move < MIN_PRICE_MOVE:
+    # Asiri yukselmis 5dk mumu
+    if price_move > MAX_PRICE_MOVE_5M:
         return None
 
-    if price_move > MAX_PRICE_MOVE:
+    # Negatif momentumda pump alarmi verme
+    if price_move < -2:
         return None
 
     oi_change = None
-    funding_rate = None
+    futures_multiple = None
+
+    # -------------------------
+    # FUTURES TEYIDI
+    # -------------------------
 
     if symbol in futures_set:
+
         try:
+
             oi = oi_history(symbol)
 
             if len(oi) >= 3:
-                old_oi = float(oi[-3]["sumOpenInterest"])
-                new_oi = float(oi[-1]["sumOpenInterest"])
 
-                if old_oi > 0:
-                    oi_change = ((new_oi / old_oi) - 1) * 100
+                old_oi = float(
+                    oi[-3]["sumOpenInterest"]
+                )
 
-            funding_rate = funding(symbol)
+                new_oi = float(
+                    oi[-1]["sumOpenInterest"]
+                )
+
+                oi_change = pct(
+                    old_oi,
+                    new_oi
+                )
+
+            fc = futures_klines(symbol)
+
+            if len(fc) >= 10:
+
+                f_current = fc[-1]
+
+                f_previous = fc[-9:-1]
+
+                f_volume = float(
+                    f_current[5]
+                )
+
+                f_baseline = median([
+                    float(c[5])
+                    for c in f_previous
+                ])
+
+                if f_baseline > 0:
+
+                    f_projected = (
+                        f_volume / progress
+                    )
+
+                    futures_multiple = (
+                        f_projected /
+                        f_baseline
+                    )
 
         except Exception as e:
-            print(symbol, "futures verisi alinamadi:", e)
+
+            print(
+                symbol,
+                "futures teyidi kullanilamadi:",
+                e
+            )
+
+    # -------------------------
+    # PUAN / SEVIYE
+    # -------------------------
 
     level = "🟡 ERKEN AV"
 
-    # CELR / CHR tipi turev liderli anomali
-    if (
-        volume_multiple >= STRONG_VOLUME_MULTIPLE
-        and oi_change is not None
-        and oi_change >= MIN_OI_CHANGE
-    ):
-        level = "🚨 ERKEN ANOMALİ — türev liderli, spot teyidi eksik olabilir"
+    strong = (
+        projected_multiple >=
+        STRONG_VOLUME_MULTIPLE
+    )
 
-    # Spot teyidi de gelirse
-    if (
-        volume_multiple >= STRONG_VOLUME_MULTIPLE
-        and oi_change is not None
+    taker_confirmed = (
+        taker_ratio >=
+        MIN_TAKER_RATIO
+    )
+
+    futures_confirmed = (
+        futures_multiple is not None
+        and futures_multiple >= 3
+    )
+
+    oi_confirmed = (
+        oi_change is not None
         and oi_change >= MIN_OI_CHANGE
-        and taker_ratio >= 55
-    ):
-        level = "🟢 TEYİTLİ"
+    )
+
+    confirmations = sum([
+        strong,
+        taker_confirmed,
+        futures_confirmed,
+        oi_confirmed
+    ])
+
+    if confirmations >= 2:
+        level = "🟠 GUCLU ERKEN SINYAL"
+
+    if confirmations >= 3:
+        level = "🚨 ERKEN ANOMALI"
 
     return {
         "symbol": symbol,
         "price": current_close,
-        "move": price_move,
-        "volume_multiple": volume_multiple,
+        "move_1m": move_1m,
+        "move_5m": price_move,
+        "move_15m": move_15m,
+        "current_multiple": current_multiple,
+        "projected_multiple": projected_multiple,
         "taker_ratio": taker_ratio,
+        "futures_multiple": futures_multiple,
         "oi_change": oi_change,
-        "funding": funding_rate,
-        "level": level
+        "level": level,
+        "score": confirmations
     }
 
 
+# =========================
+# FORMAT
+# =========================
+
+def fmt(value, suffix="", digits=2):
+
+    if value is None:
+        return "-"
+
+    return (
+        f"{value:+.{digits}f}{suffix}"
+    )
+
+
 def format_alert(x):
+
+    futures_text = (
+        f"{x['futures_multiple']:.1f}x"
+        if x["futures_multiple"] is not None
+        else "-"
+    )
+
     oi_text = (
-        f"{x['oi_change']:+.2f}%"
+        fmt(x["oi_change"], "%")
         if x["oi_change"] is not None
-        else "Futures/OI yok"
+        else "-"
     )
-
-    funding_text = (
-        f"{x['funding']:+.4f}%"
-        if x["funding"] is not None
-        else "—"
-    )
-
-    leveraged = ""
-
-    if x["oi_change"] is not None and x["oi_change"] >= MIN_OI_CHANGE:
-        leveraged = (
-            "\n⚡ Fiyat + hacim + OI birlikte artıyor:"
-            " yeni kaldıraçlı pozisyon girişi olası."
-        )
 
     return (
         f"{x['level']}\n\n"
         f"🪙 {x['symbol']}\n"
         f"💵 Fiyat: {x['price']}\n"
-        f"📈 Son 5dk: {x['move']:+.2f}%\n"
-        f"🔥 5dk hacim: {x['volume_multiple']:.1f}x\n"
-        f"🟢 Spot taker alıcı: %{x['taker_ratio']:.1f}\n"
-        f"📊 OI ~10dk: {oi_text}\n"
-        f"💰 Funding: {funding_text}"
-        f"{leveraged}\n\n"
-        f"⚠️ Radar sinyalidir, otomatik alım değildir."
+        f"⚡ 1dk: {fmt(x['move_1m'], '%')}\n"
+        f"📈 5dk: {fmt(x['move_5m'], '%')}\n"
+        f"📊 15dk: {fmt(x['move_15m'], '%')}\n"
+        f"🔥 5dk hacim simdi: "
+        f"{x['current_multiple']:.1f}x\n"
+        f"🚀 5dk hacim hiz tahmini: "
+        f"{x['projected_multiple']:.1f}x\n"
+        f"🟢 Spot taker alici: "
+        f"%{x['taker_ratio']:.1f}\n"
+        f"⚙️ Futures hacim: "
+        f"{futures_text}\n"
+        f"📊 OI ~10dk: "
+        f"{oi_text}\n\n"
+        f"⚠️ Erken radar sinyalidir; "
+        f"otomatik alim sinyali degildir."
     )
 
 
+# =========================
+# MAIN
+# =========================
+
 def main():
-    print("Crypto Av Radari basladi.")
+
+    print("Crypto Av Radari v2 basladi.")
 
     symbols = spot_symbols()
+
+    print(
+        "Taranacak USDT spot paritesi:",
+        len(symbols)
+    )
+
     futures_set = futures_symbols()
 
-    print("Taranacak USDT paritesi:", len(symbols))
+    print(
+        "Futures teyidi bulunan sembol:",
+        len(futures_set)
+    )
 
     alerts = []
 
-    for symbol in symbols:
+    for index, symbol in enumerate(symbols, 1):
+
         try:
-            result = scan_symbol(symbol, futures_set)
+
+            result = scan_symbol(
+                symbol,
+                futures_set
+            )
 
             if result:
                 alerts.append(result)
 
-            # Binance'a gereksiz yuk bindirmemek icin
-            time.sleep(0.04)
+            time.sleep(0.05)
 
         except Exception as e:
-            print(symbol, "hata:", e)
 
-    # En guclu hacim anomalileri once
+            print(
+                symbol,
+                "tarama hatasi:",
+                e
+            )
+
+    # Once teyit sayisi,
+    # sonra hacim ivmesi
     alerts.sort(
-        key=lambda x: x["volume_multiple"],
+        key=lambda x: (
+            x["score"],
+            x["projected_multiple"]
+        ),
         reverse=True
     )
 
     if not alerts:
-        print("Yeni anlamli erken sinyal yok.")
+
+        print(
+            "Yeni anlamli erken sinyal yok."
+        )
+
         return
 
-    # Bir calismada maksimum 5 alarm
+    print(
+        "Alarm adayi:",
+        len(alerts)
+    )
+
+    # Spam olmamasi icin
+    # en guclu 5 sinyal
     for alert in alerts[:5]:
-        telegram(format_alert(alert))
-        print(alert["symbol"], alert["level"])
+
+        message = format_alert(alert)
+
+        telegram(message)
+
+        print(
+            alert["symbol"],
+            alert["level"],
+            f"{alert['projected_multiple']:.1f}x"
+        )
 
 
 if __name__ == "__main__":
