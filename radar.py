@@ -1064,31 +1064,31 @@ def trend_deep_scan(candidate):
             float(completed[-24][1]),
             price
         )
-# =================================================
-# v5.1 ERKEN TREND FILTRESI
-# =================================================
+        # =================================================
+        # v5.1 ERKEN TREND FILTRESI
+        # =================================================
 
-# Son 1 saatte sert dump yiyen coin trend adayi degil.
-if move_1h < TREND_MIN_1H:
-    return None
+        # Son 1 saatte sert dusus varsa ele
+        if move_1h < TREND_MIN_1H:
+            return None
 
-# Tek saatte coktan firlamis coini kovalamiyoruz.
-if move_1h > TREND_MAX_1H:
-    return None
+        # Son 1 saatte coktan firlamissa ele
+        if move_1h > TREND_MAX_1H:
+            return None
 
-# 4 saatlik hareket daha yeni baslamis olmali.
-if (
-    move_4h < TREND_MIN_4H
-    or move_4h > TREND_MAX_4H
-):
-    return None
+        # 4 saatlik hareket erken trend araliginda olmali
+        if (
+            move_4h < TREND_MIN_4H
+            or move_4h > TREND_MAX_4H
+        ):
+            return None
 
-# 24 saatte coktan parabolik hale gelenleri ele.
-if (
-    move_24h < TREND_MIN_24H
-    or move_24h > TREND_MAX_24H
-):
-    return None
+        # 24 saatte coktan parabolik olanlari ele
+        if (
+            move_24h < TREND_MIN_24H
+            or move_24h > TREND_MAX_24H
+        ):
+            return None
         recent_vol = safe_median([
             c[7]
             for c in completed[-4:]
