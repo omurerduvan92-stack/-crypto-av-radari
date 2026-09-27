@@ -47,16 +47,21 @@ ACCUM_MIN_QUOTE = 200_000
 # alis baskisi devam ediyor mu?
 PERSISTENT_TAKER_MIN = 55.0
 
-# ----- TREND MOTORU -----
-TREND_MIN_1H = 0.8
-TREND_MAX_1H = 12.0
+# ----- TREND MOTORU v5.1 -----
+
+# ZEC / ONT / LSK tipi erken yuruyen trendleri ara.
+# Tek saatte coktan firlamis veya sert dump yiyenleri ele.
+
+TREND_MIN_1H = -2.0
+TREND_MAX_1H = 6.0
 
 TREND_MIN_4H = 1.5
-TREND_MAX_4H = 25.0
+TREND_MAX_4H = 10.0
 
 TREND_MIN_24H = 2.0
-TREND_MAX_24H = 35.0
+TREND_MAX_24H = 18.0
 
+# Son saatlerde hacim eski rejimin en az 1.5 kati olmali.
 TREND_VOLUME_MULTIPLE = 1.5
 
 # ----- FUTURES -----
@@ -1059,7 +1064,31 @@ def trend_deep_scan(candidate):
             float(completed[-24][1]),
             price
         )
+# =================================================
+# v5.1 ERKEN TREND FILTRESI
+# =================================================
 
+# Son 1 saatte sert dump yiyen coin trend adayi degil.
+if move_1h < TREND_MIN_1H:
+    return None
+
+# Tek saatte coktan firlamis coini kovalamiyoruz.
+if move_1h > TREND_MAX_1H:
+    return None
+
+# 4 saatlik hareket daha yeni baslamis olmali.
+if (
+    move_4h < TREND_MIN_4H
+    or move_4h > TREND_MAX_4H
+):
+    return None
+
+# 24 saatte coktan parabolik hale gelenleri ele.
+if (
+    move_24h < TREND_MIN_24H
+    or move_24h > TREND_MAX_24H
+):
+    return None
         recent_vol = safe_median([
             c[7]
             for c in completed[-4:]
@@ -1158,18 +1187,22 @@ def trend_deep_scan(candidate):
         if score < 6:
             return None
 
-        level = (
-            "🔵 TREND BASLANGICI"
-        )
+       # =================================================
+# v5.1 TREND SINIFLANDIRMA
+# =================================================
 
-        if (
-            score >= 8
-            and higher_low_count >= 2
-            and higher_high_count >= 2
-        ):
-            level = (
-                "📈 GUCLU TREND DEVAMI"
-            )
+level = "🔵 ERKEN TREND"
+
+# Trend oturmaya baslamis ama fiyat hala
+# erken kabul ettigimiz bolgede olmali.
+if (
+    score >= 8
+    and higher_low_count >= 3
+    and higher_high_count >= 3
+    and move_1h <= 4.0
+    and move_4h <= 8.0
+):
+    level = "📈 GUCLU TREND DEVAMI"
 
         return {
             "symbol": symbol,
