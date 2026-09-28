@@ -15,7 +15,8 @@ FUTURES = "https://fapi.binance.com"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
+RADAR_STATE_FILE = os.getenv("RADAR_STATE_FILE", ".radar_state/state.json")
+os.makedirs(os.path.dirname(RADAR_STATE_FILE), exist_ok=True)
 # ----- HIZLI MOTOR -----
 EARLY_VOLUME_MULTIPLE = 3.0
 STRONG_VOLUME_MULTIPLE = 5.0
