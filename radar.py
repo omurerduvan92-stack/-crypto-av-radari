@@ -5,7 +5,7 @@ from statistics import median
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =========================================================
-# CRYPTO AV RADARI v6
+# CRYPTO AV RADARI v6.1
 # CHR + CELR + ONE + QI + HBAR
 # HIZLI ANOMALI + BIRIKIM + TREND + FUTURES/OI
 # =========================================================
@@ -82,7 +82,7 @@ EXCLUDED_BASES = {
 }
 
 session = requests.Session()
-session.headers.update({"User-Agent": "Crypto-Av-Radari/6.0"})
+session.headers.update({"User-Agent": "Crypto-Av-Radari/6.1"})
 
 
 def get_json(url, params=None, timeout=6):
@@ -450,13 +450,13 @@ def deep_scan(candidate, futures_set):
         if volume_staircase: score += 1
 
         if late:
-            level = "ð´ GEC"
+            level = "[GEC]"
         elif celr_type:
-            level = "ð¨ GUCLU ERKEN ANOMALI"
+            level = "[GUCLU ERKEN ANOMALI]"
         elif patterns:
-            level = "ð¨ ERKEN ANOMALI"
+            level = "[ERKEN ANOMALI]"
         else:
-            level = "ð¡ ERKEN AV"
+            level = "[ERKEN AV]"
 
         return {
             "symbol": symbol,
@@ -603,33 +603,33 @@ def format_fast_alert(x):
 
     return (
         f"{x['level']}\n\n"
-        f"ðª {x['symbol']}\n"
-        f"ð§¬ Kalip: {pattern}\n"
-        f"ðµ Fiyat: {x['price']}\n\n"
-        f"â¡ 1dk: {fmt(x['move_1m'], '%')}\n"
-        f"ð 5dk: {fmt(x['move_5m'], '%')}\n"
-        f"ð 15dk: {fmt(x['move_15m'], '%')}\n"
-        f"ð 24s: {fmt(x['move_24h'], '%')}\n\n"
-        f"ð° Acik 5dk hacim: {money(x['quote_volume'])}\n"
-        f"ð¥ 5dk hacim hizi: {x['projected_quote_multiple']:.1f}x\n"
-        f"ðª QI hacim merdiveni: {staircase}\n"
-        f"ð¢ Spot taker: %{x['taker_ratio']:.1f}\n\n"
-        f"âï¸ Futures hacim: {futures_text}\n"
-        f"ð OI 5dk: {fmt(x['oi5'], '%')}\n"
-        f"ð OI 15dk: {fmt(x['oi15'], '%')}\n"
-        f"ð OI 30dk: {fmt(x['oi30'], '%')}\n"
-        f"ð¸ Funding: {funding_text}\n\n"
-        f"ð¯ Son 12 mum tepe: {x['breakout'] or '-'}\n"
-        f"â­ Puan: {x['score']}\n\n"
-        f"â ï¸ Giris bolgesi adayidir; otomatik alim emri degildir."
+        f"COIN: {x['symbol']}\n"
+        f"KALIP: {pattern}\n"
+        f"FIYAT: {x['price']}\n\n"
+        f"1dk: {fmt(x['move_1m'], '%')}\n"
+        f"5dk: {fmt(x['move_5m'], '%')}\n"
+        f"15dk: {fmt(x['move_15m'], '%')}\n"
+        f"24s: {fmt(x['move_24h'], '%')}\n\n"
+        f"ACIK 5dk HACIM: {money(x['quote_volume'])}\n"
+        f"5dk HACIM HIZI: {x['projected_quote_multiple']:.1f}x\n"
+        f"QI HACIM MERDIVENI: {staircase}\n"
+        f"SPOT TAKER: %{x['taker_ratio']:.1f}\n\n"
+        f"FUTURES HACIM: {futures_text}\n"
+        f"OI 5dk: {fmt(x['oi5'], '%')}\n"
+        f"OI 15dk: {fmt(x['oi15'], '%')}\n"
+        f"OI 30dk: {fmt(x['oi30'], '%')}\n"
+        f"FUNDING: {funding_text}\n\n"
+        f"SON 12 MUM TEPE: {x['breakout'] or '-'}\n"
+        f"PUAN: {x['score']}\n\n"
+        f"NOT: Giris bolgesi adayidir; otomatik alim emri degildir."
     )
 
 
 def format_trend_alert(x):
     return (
         f"{x['level']}\n\n"
-        f"ðª {x['symbol']}\n"
-        f"ðµ Fiyat: {x['price']}\n\n"
+        f"COIN: {x['symbol']}\n"
+        f"FIYAT: {x['price']}\n\n"
         f"â± 1s: {fmt(x['move_1h'], '%')}\n"
         f"ð 4s: {fmt(x['move_4h'], '%')}\n"
         f"ð 24s: {fmt(x['move_24h'], '%')}\n\n"
@@ -643,7 +643,7 @@ def format_trend_alert(x):
 
 def main():
     start = time.time()
-    print("Crypto Av Radari v6 basladi.")
+    print("Crypto Av Radari v6.1 basladi.")
 
     symbols = spot_symbols()
     print("Taranacak USDT spot:", len(symbols))
@@ -700,31 +700,43 @@ def main():
         if r:
             alerts.append(r)
 
-    # Ayni calismada ayni coin icin en yuksek puanli alarmi tut.
-    best = {}
-    for a in alerts:
-        s = a["symbol"]
-        if s not in best or a["score"] > best[s]["score"]:
-            best[s] = a
+    # Telegram gÃ¼rÃ¼ltÃ¼sÃ¼nÃ¼ azalt:
+    # TREND motoru analiz/console icin kalsin, Telegram sadece FAST motorundan gelsin.
+    fast_alerts = [a for a in alerts if a["type"] == "FAST"]
 
-    unique = sorted(best.values(), key=lambda x: x["score"], reverse=True)
+    # Gercek patternler (CHR/CELR/ONE/QI/HBAR) genel erken avlardan once gelsin.
+    fast_alerts.sort(
+        key=lambda a: (
+            1 if a["patterns"] != ["GENEL"] else 0,
+            a["score"],
+            a["projected_quote_multiple"],
+        ),
+        reverse=True,
+    )
+
+    # Ayni calismada ayni coin icin tek mesaj.
+    best = {}
+    for a in fast_alerts:
+        symbol = a["symbol"]
+        if symbol not in best or a["score"] > best[symbol]["score"]:
+            best[symbol] = a
+
+    unique = list(best.values())
 
     print("Toplam tarama suresi:", f"{time.time() - start:.1f}s")
+    print("Trend adaylari Telegram'a gonderilmiyor:", len(
+        [a for a in alerts if a["type"] == "TREND"]
+    ))
 
     if not unique:
-        print("Yeni anlamli sinyal yok.")
+        print("Yeni anlamli erken anomali yok.")
         return
 
-    print("Kaliteli alarm:", len(unique))
+    print("Telegram erken alarm:", len(unique))
 
     for a in unique[:MAX_ALERTS]:
-        message = (
-            format_trend_alert(a)
-            if a["type"] == "TREND"
-            else format_fast_alert(a)
-        )
-        telegram(message)
-        print(a["symbol"], a["level"], "score:", a["score"])
+        telegram(format_fast_alert(a))
+        print(a["symbol"], a["level"], "pattern:", "/".join(a["patterns"]), "score:", a["score"])
 
 
 if __name__ == "__main__":
