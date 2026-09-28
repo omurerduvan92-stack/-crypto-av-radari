@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # =========================================================
 
 SPOT = "https://data-api.binance.vision"
-FUTURES = "https://fapi.binance.me"
+FUTURES = "https://fapi.binance.com"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
